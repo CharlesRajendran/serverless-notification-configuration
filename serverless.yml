@@ -1,0 +1,82 @@
+service: notification-config
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  stage: dev
+  region: us-east-1
+  memorySize: 512
+  timeout: 30
+
+  # iamRoleStatements:
+  #   - Effect: Allow
+  #     Action:
+  #       - 'sqs:*'
+  #       - 's3:*'
+  #     Resource: '*'
+
+functions:
+  processHistoryFiles:
+    handler: src/handler.historyRun
+    description: History lambda process archived files uploaded through public api or SFTPed files
+    maximumRetryAttempts: 0
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - AnalyticsHistoryQueue
+              - Arn
+          batchSize: 1
+
+resources:
+  Resources:
+    AnalyticsHistoryQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: lambda-${opt:stage, self:provider.stage, 'local'}-analytics-history-queue
+        VisibilityTimeout: 400
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt:
+              - AnalyticsHistoryDeadLetterQueue
+              - Arn
+          maxReceiveCount: 1
+
+    AnalyticsHistoryDeadLetterQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: backout-${opt:stage, self:provider.stage, 'local'}-analytics-history-queue
+
+    AnalyticsHistoryBucket:
+      Type: "AWS::S3::Bucket"
+      Properties:
+        BucketName: qvalia.filestore.${opt:stage, self:provider.stage, 'local'}.analytics-history-bucket
+        NotificationConfiguration:
+          QueueConfigurations:
+            - Event: s3:ObjectCreated:*
+              Queue:
+                Fn::GetAtt:
+                  - AnalyticsHistoryQueue
+                  - Arn
+
+    AnalyticsHistorySQSQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref AnalyticsHistoryQueue
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: s3.amazonaws.com
+              Action: sqs:SendMessage
+              Resource:
+                Fn::GetAtt:
+                  - AnalyticsHistoryQueue
+                  - Arn
+              Condition:
+                ArnLike:
+                  aws:SourceArn: arn:aws:s3:::qvalia.filestore.${opt:stage, self:provider.stage, 'local'}.analytics-history-bucket
+                StringEquals:
+                  aws:SourceAccount: !Ref AWS::AccountId
